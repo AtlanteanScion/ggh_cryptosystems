@@ -40,19 +40,8 @@ void getUnimodular(Mat<RR>& uni, const long dim_n)
 				lower[j][i] = RandomBnd(2) * 2 - 1;	// {-1,1}
 			}
 		}
-//	cout << "upper=\n" << upper << "\n\n";
-//	cout << "lower=\n" << lower << "\n\n";
 	}
 	mul(uni, lower, upper);
-
-//	cout << "determinant=" << determinant(upper) << "\n";
-//	cout << "upper=\n" << upper << "\n\n";
-
-//	cout << "determinant=" << determinant(lower) << "\n";
-//	cout << "lower=\n" << lower << "\n\n";
-
-//	cout << "determinant=" << determinant(uni) << "\n";
-//	cout << "uni=\n" << uni << "\n\n";
 }
 
 //fill with random integers (-l,l)
@@ -118,29 +107,16 @@ void generatePublicMixing(Mat<RR>& pub, const Mat<RR>& priv, const long dim_n)
 	}
 }
 
-	Mat<RR> fullTransform;
-	Mat<RR> fullTransformInv;
 // Multiply private key by at least 4 random unimodular matrices.
 void generatePublicTransforms(Mat<RR>& pub, const Mat<RR>& priv, const long dim_n)
 {
 	Mat<RR> transform;
-	fullTransform = ident_mat_RR(dim_n);
-	Mat<RR> recPriv;
 	pub = priv;
 	for(long i = 0; i < 4; ++i)
 	{
 		getUnimodular(transform, dim_n);
-//	cout << "pub=\n" << pub << "\n";
-//	cout << "transform=\n" << transform << "\n\n";
 		mul(pub, pub, transform);
-		mul(fullTransform, fullTransform, transform);
 	}
-//	cout << "pub=\n" << pub << "\n";
-//	cout << "fullTransform=\n" << fullTransform << "\n";
-	inv(fullTransformInv, fullTransform);
-//	cout << "fullTransformInv=\n" << fullTransformInv << "\n";
-//	mul(recPriv, pub, fullTransformInv);
-//	cout << "recPriv=\n" << recPriv << "\n";
 }
 
 void errVec(Vec<RR>& v, const long dim_n)
@@ -162,79 +138,29 @@ void roundVec(Vec<RR>& v, const long dim_n)
 	}
 }
 
-RR maxVal(Mat<RR>& mtx, const long dim_n)
-{
-	RR maxElt;
-	maxElt = 0;
-	for(long i = 0; i < dim_n; ++i)
-	{
-		for(long j = 0; j < dim_n; ++j)
-		{
-			maxElt = max(maxElt, abs(mtx[j][i]));
-		}
-	}
-	return maxElt;
-}
-
-void matRRtoZZ(Mat<ZZ>& matZZ, Mat<RR>& matRR, const long dim_n)
-{
-	matZZ = ident_mat_ZZ(dim_n);
-	for(long i = 0; i < dim_n; ++i)
-	{
-		for(long j = 0; j < dim_n; ++j)
-		{
-			matZZ[j][i] = RoundToZZ(matRR[j][i]);
-		}
-	}
-}
-
 int runTest()
 {
 	Mat<RR> priv_R;	// Private key (low dual-orthogonality-defect)
 	Mat<RR> pub_B;	// Public key (high dual-orthogonality-defect)
 	
-	const long dim_n = 4;
+	const long dim_n = 17;
 	genParam_l = 4;
-//	genParam_k = round(genParam_l * sqrt(dim_n));
 	genParam_k = genParam_l * ceil(1 + sqrt(dim_n));
 	sigma = 3;
 	
 	cout << "Generating private key...\n";
-//	generatePrivateRandom(priv_R, dim_n);	// BUG
-	generatePrivateRectangular(priv_R, dim_n);
+//	generatePrivateRandom(priv_R, dim_n);	// BUG 0% success rate
+	generatePrivateRectangular(priv_R, dim_n);	// Preferred by GGH
 //	cout << "priv_R=\n" << priv_R << "\n";
 
 	cout << "Generating public key...\n";
-	if(1)//RandomBnd(2))
-	{
-		cout << "Mixing...\n";
-		generatePublicMixing(pub_B, priv_R, dim_n);
-	}
-	else
-	{
-		cout << "Transform...\n";
-		generatePublicTransforms(pub_B, priv_R, dim_n);	// BUG
-	}
-//cout << "max pub_B=\n" << maxVal(pub_B, dim_n) << "\n";
+	generatePublicMixing(pub_B, priv_R, dim_n);	// Preferred by GGH
+//	generatePublicTransforms(pub_B, priv_R, dim_n);
 //	cout << "pub_B=\n" << pub_B << "\n";
-ZZ det2;
-mat_ZZ inB;
-mat_ZZ outU;
-mat_ZZ newB;
-matRRtoZZ(inB, pub_B, dim_n);
-det2 = determinant(inB);
-cout << "determinant=" << det2 << "\n";
-det2 *= det2;
-cout << "inB=\n" << inB << "\n";
-LLL(det2, inB, outU);
-cout << "outU=\n" << outU << "\n";
-mul(newB, outU, inB);
-cout << "newB=\n" << newB << "\n";
-return 0;
+
 	cout << "Generating private inverse...\n";
 	Mat<RR> priv_R_Inv;
 	inv(priv_R_Inv, priv_R);
-	cout << "max priv_R_Inv=\n" << maxVal(priv_R_Inv, dim_n) << "\n";
 
 	cout << "Generating public inverse...\n";
 	Mat<RR> pub_B_Inv;
@@ -292,20 +218,6 @@ return 0;
 	roundVec(dec_v, dim_n);
 //	cout << "dec_v=" << dec_v << "\n";
 
-// Alt decrypt
-// T == U^-1
-// U^-1 * round(R^-1 * c)
-//cout << "trans_T=" << trans_T << "\n";
-//cout << "fullTransformInv=" << fullTransformInv << "\n";
-//cout << "Alt Decrypting...\n";
-//Vec<RR> dec_v2;
-//mul(dec_v2, priv_R_Inv, crypt_c);
-//roundVec(dec_v2, dim_n);
-//mul(dec_v2, fullTransformInv, dec_v2);
-//roundVec(dec_v2, dim_n);
-//cout << "dec_v2=" << dec_v2 << "\n";
-
-//cout << "fullTransform=\n" << fullTransform << "\n";
 	Vec<RR> diff;
 	diff = dec_v - msg_v;
 	roundVec(diff, dim_n);
@@ -318,22 +230,6 @@ return 0;
 	else
 	{
 		cout << "\n\nFail\n";
-//cout << "priv_R=\n" << priv_R << "\n";
-//cout << "pub_B=\n" << pub_B << "\n";
-//cout << "priv_R_Inv=\n" << priv_R_Inv << "\n";
-//cout << "pub_B_Inv=\n" << pub_B_Inv << "\n";
-//cout << "fullTransform=\n" << fullTransform << "\n";
-//cout << "fullTransformInv=" << fullTransformInv << "\n";
-//cout << "trans_T=" << trans_T << "\n";
-//cout << "err_e=" << err_e << "\n";
-//cout << "msg_v=" << msg_v << "\n";
-//cout << "crypt_c=" << crypt_c << "\n";
-//cout << "dec_v=" << dec_v << "\n";
-Vec<RR> sigmaCheck;
-mul(sigmaCheck, priv_R_Inv, err_e);
-cout << "sigmaCheck=" << sigmaCheck << "\n";
-roundVec(sigmaCheck, dim_n);
-cout << "sigmaCheck=" << sigmaCheck << "\n";
 		return 0;
 	}
 
@@ -344,9 +240,9 @@ int main()
 {
 	long pass = 0;
 	long total = 0;
+
 	RR::SetPrecision(300);
 	RR::SetOutputPrecision(300);
-cout << "precision() = " << RR::precision() << "\n";
 
 	for(long i = 0; i < 100; ++i)
 	{
@@ -354,7 +250,6 @@ cout << "precision() = " << RR::precision() << "\n";
 		cout << "\n\nTest: " << total << "\n";
 		pass += runTest();
 		cout << "Success rate = " << ((float) pass/total) << "\n";
-if(pass!=total)return 1;		
 	}
 
 	return 0;
