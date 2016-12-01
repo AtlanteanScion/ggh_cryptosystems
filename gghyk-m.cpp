@@ -2,9 +2,6 @@
 #include <NTL/ZZ.h>
 #include <NTL/vec_ZZ.h>
 #include <NTL/mat_ZZ.h>
-#include <NTL/RR.h>
-#include <NTL/vec_RR.h>
-#include <NTL/mat_RR.h>
 #include <NTL/HNF.h>
 
 using namespace std;
@@ -21,8 +18,10 @@ private:
 	long parameter_k;	// Message encoding parameter k
 	Mat<ZZ> private_B;	// Private basis B (low dual-orthogonality-defect)
 	Mat<ZZ> public_W;	// Public basis W (high dual-orthogonality-defect)
-	Mat<RR> private_B_Inv;	// B Inverse
-	Mat<RR> public_W_Inv;	// W Inverse
+	Mat<ZZ> private_B_Inv;	// B Inverse
+	Mat<ZZ> public_W_Inv;	// W Inverse
+	ZZ private_B_Det;	// B Determinant
+	ZZ public_W_Det;	// W Determinant
 
 public:
 	GGH(long dimension_n) : dimension_n(dimension_n)
@@ -31,9 +30,6 @@ public:
 		{
 			dimension_n = 4;
 		}
-
-		long prec = conv<long>(CeilToZZ(3.33 * pow(conv<RR>(dimension_n), conv<RR>(1.2))));
-		RR::SetPrecision(prec);
 
 		parameter_alpha = 3;
 		parameter_gamma = conv<ZZ>(parameter_alpha * dimension_n);
@@ -109,9 +105,8 @@ public:
 		cout << "Encrypting...\n";
 
 		Vec<ZZ> x;
-		Vec<RR> temp;
-		mul(temp, public_W_Inv, conv<Vec<RR>>(plaintext_r));
-		FloorVector(x, temp);
+		mul(x, public_W_Inv, plaintext_r);
+		DivideFloorVector(x, x, public_W_Det);
 		mul(x, -1L, x);
 
 		mul(cyphertext_c, public_W, x);
@@ -124,19 +119,22 @@ public:
 
 		// u = B^-1 * c - round(B^-1 * c)
 		cout << "Decrypting...\n";
-		Vec<RR> temp;
-		Vec<RR> bInv_c;
-		Vec<RR> vec_u;
-		mul(bInv_c, private_B_Inv, conv<Vec<RR>>(cyphertext_c));
-		RoundVector(temp, bInv_c);
+		Vec<ZZ> temp;
+		Vec<ZZ> bInv_c;
+		Vec<ZZ> vec_u;
+		mul(bInv_c, private_B_Inv, cyphertext_c);
+		ModVector(bInv_c, bInv_c, private_B_Det);
+		DivideRoundVector(temp, bInv_c, private_B_Det);
+		mul(temp, temp, private_B_Det);
 		sub(vec_u, bInv_c, temp);
 
 		// r' = Bu = r - Be
-		Vec<RR> r_prime;
-		mul(r_prime, conv<Mat<RR>>(private_B), vec_u);
+		Vec<ZZ> r_prime;
+		mul(r_prime, private_B, vec_u);
+		DivideRoundVector(r_prime, r_prime, private_B_Det);
 
 			// Calculate e:
-			Vec<RR> vec_e;
+			Vec<ZZ> vec_e;
 			vec_e.SetLength(r_prime.length());
 			// if r'i < 0, then ei = 1
 			// else ei = 0
@@ -153,9 +151,8 @@ public:
 			}
 
 		// r = r' + Be
-		mul(temp, conv<Mat<RR>>(private_B), vec_e);
-		add(temp, r_prime, temp);
-		RoundVector(plaintext_r, temp);
+		mul(temp, private_B, vec_e);
+		add(plaintext_r, r_prime, temp);
 	}
 
 	void GenerateRandomMessage(Vec<uint8_t>& msg)
@@ -182,27 +179,24 @@ private:
 		// (4) Non-diagonal entries, q, of inverse:  abs(q) < 2/gamma^2
 		// (8) Diagonal entries, q, of inverse:  abs(q) <= 2/gamma
 		// (11) Diagonal entries, q, of inverse:  abs(q) > 1/gamma
-		RR max_non_diag = conv<RR>(2) / conv<RR>(power(parameter_gamma, 2L));
-		RR max_diag = conv<RR>(2) / conv<RR>(parameter_gamma);
-		RR min_diag = conv<RR>(1) / conv<RR>(parameter_gamma);
 		for(long i = 0; i < dimension_n; ++i)
 		{
 			for(long j = 0; j < dimension_n; ++j)
 			{
 				if(i == j)
 				{
-					if(abs(private_B_Inv[j][i]) > max_diag)
+					if(abs(private_B_Inv[j][i]) * parameter_gamma > 2 * abs(private_B_Det))
 					{
 						// Constraint not satisfied; new key must be generated.
 						return false;
 					}
-					if(abs(private_B_Inv[j][i]) <= min_diag)
+					if(abs(private_B_Inv[j][i]) * parameter_gamma <= 1 * abs(private_B_Det))
 					{
 						// Constraint not satisfied; new key must be generated.
 						return false;
 					}
 				}
-				else if(abs(private_B_Inv[j][i]) >= max_non_diag)
+				else if(abs(private_B_Inv[j][i]) * parameter_gamma * parameter_gamma >= 2 * abs(private_B_Det))
 				{
 					// Constraint not satisfied; new key must be generated.
 					return false;
@@ -253,38 +247,43 @@ private:
 
 	void GeneratePrivateInverse()
 	{
-		inv(private_B_Inv, conv<Mat<RR>>(private_B));
+		inv(private_B_Det, private_B_Inv, private_B);
 	}
 
 	void GeneratePublicInverse()
 	{
-		inv(public_W_Inv, conv<Mat<RR>>(public_W));
+		inv(public_W_Det, public_W_Inv, public_W);
 	}
 
-	void FloorVector(Vec<ZZ>& vec_floored, Vec<RR>& vec)
+	void DivideFloorVector(Vec<ZZ>& vector_quotient, Vec<ZZ>& vector_dividend, ZZ& divisor)
 	{
-		vec_floored.SetLength(vec.length());
-		for(long i = 0; i < vec.length(); ++i)
+		vector_quotient.SetLength(vector_dividend.length());
+		for(long i = 0; i < vector_dividend.length(); ++i)
 		{
-			FloorToZZ(vec_floored[i], vec[i]);
+			div(vector_quotient[i], vector_dividend[i], divisor);
 		}
 	}
 
-	void RoundVector(Vec<ZZ>& vec_rounded, Vec<RR>& vec)
+	void DivideRoundVector(Vec<ZZ>& quotient, Vec<ZZ>& dividend, ZZ& divisor)
 	{
-		vec_rounded.SetLength(vec.length());
-		for(long i = 0; i < vec.length(); ++i)
+		quotient.SetLength(dividend.length());
+		for(long i = 0; i < dividend.length(); ++i)
 		{
-			RoundToZZ(vec_rounded[i], vec[i]);
+			ZZ remainder;
+			DivRem(quotient[i], remainder, dividend[i], divisor);
+			if(remainder > divisor - remainder)
+			{
+				++quotient[i];
+			}
 		}
 	}
 
-	void RoundVector(Vec<RR>& vec_rounded, Vec<RR>& vec)
+	void ModVector(Vec<ZZ>& remainder, Vec<ZZ>& dividend, ZZ& divisor)
 	{
-		vec_rounded.SetLength(vec.length());
-		for(long i = 0; i < vec.length(); ++i)
+		remainder.SetLength(dividend.length());
+		for(long i = 0; i < dividend.length(); ++i)
 		{
-			round(vec_rounded[i], vec[i]);
+			rem(remainder[i], dividend[i], divisor);
 		}
 	}
 };
