@@ -5,7 +5,7 @@
 #include <NTL/RR.h>
 #include <NTL/vec_RR.h>
 #include <NTL/mat_RR.h>
-#include <NTL/LLL.h>
+#include <NTL/HNF.h>
 
 using namespace std;
 using namespace NTL;
@@ -26,6 +26,9 @@ private:
 public:
 	GGH(long dimension_n) : dimension_n(dimension_n)
 	{
+		long prec = conv<long>(CeilToZZ(3.33 * pow(conv<RR>(dimension_n), conv<RR>(1.2))));
+		RR::SetPrecision(prec);
+
 		parameter_sigma = 3;
 		parameter_l = 4;
 		parameter_k = parameter_l * ceil(1 + sqrt(dimension_n));
@@ -46,47 +49,53 @@ public:
 		GeneratePrivateTransform();
 	}
 
-	void Encrypt(Vec<ZZ>& cyphertext_c, Vec<ZZ>& plaintext_v)
+	void Encrypt(Vec<ZZ>& cyphertext_c, Vec<ZZ>& plaintext_r)
 	{
-		// Error vector
-		Vec<ZZ> error_e;
-		GenerateErrorVector(error_e);
-
 		// Encrypt
-		// c = B * v + e
-		// c = R * U * v + e
+		// c = r mod B
+		// c = r - Bx
+		// xi = floor((ri - SUMj>i(bij * xj)) / (bii))
 		cout << "Encrypting...\n";
-		mul(cyphertext_c, public_B, plaintext_v);
-		add(cyphertext_c, cyphertext_c, error_e);
+
+		Vec<ZZ> x;
+		ComputeEncryptionReductionVector(x, plaintext_r, public_B);
+
+		mul(cyphertext_c, public_B, x);
+		sub(cyphertext_c, plaintext_r, cyphertext_c);
 	}
 
-	void Decrypt(Vec<ZZ>& plaintext_v, Vec<ZZ>& cyphertext_c)
+	void Decrypt(Vec<ZZ>& plaintext_r, Vec<ZZ>& cyphertext_c)
 	{
 		// Decrypt
 		// T = B^-1 * R
-		// v = T * round(R^-1 * c)
+		// -x = T * round(R^-1 * c)
+		// r = c - B * -x
 		//    Proof:
-		//    v = T * round(R^-1 * c)
-		//    v = B^-1 * R * round(R^-1 * (R * U * v + e))
-		//    v = B^-1 * R * round(U * v + R^-1 * e)
-		//    v = B^-1 * R * U * v
-		//    v = B^-1 * B * v
-		//    v = v
+		//    -x = T * round(R^-1 * c)
+		//    -x = B^-1 * R * round(R^-1 * (r - R * U * x))
+		//    -x = B^-1 * R * round(R^-1 * r - U * x)
+		//    -x = B^-1 * R * U * -x
+		//    -x = B^-1 * B * -x
+		//    -x = -x
+
 		cout << "Decrypting...\n";
 		Vec<RR> temp;
+		Vec<ZZ> negX;
 		mul(temp, private_R_Inv, conv<Vec<RR>>(cyphertext_c));
 		RoundVector(temp, temp);
 		mul(temp, transform_T, temp);
-		RoundVector(plaintext_v, temp);
+		RoundVector(negX, temp);
+		mul(plaintext_r, public_B, negX);
+		sub(plaintext_r, cyphertext_c, plaintext_r);
 	}
 
-	void GenerateRandomPlaintext(Vec<ZZ>& plaintext_v)
+	void GenerateRandomErrorVectorPlaintext(Vec<ZZ>& r)
 	{
-		plaintext_v.SetLength(dimension_n);
+		r.SetLength(dimension_n);
 
 		for(long i = 0; i < dimension_n; ++i)
 		{
-			plaintext_v[i] = RandomBnd(2 * dimension_n + 1) - dimension_n;	// [-n,n]
+			r[i] = parameter_sigma * (RandomBnd(2) * 2 - 1);	// {-sigma,sigma}
 		}
 	}
 
@@ -110,40 +119,15 @@ private:
 		}
 	}
 
-	// Add/subtract random vectors to each vector.  Do >=2 passes.
+	// Compute Hermite Normal Form of private key.
 	void GeneratePublic()
 	{
-		long rand;
 		transpose(public_B, private_R);
-		for(long pass = 0; pass < 2; ++pass)
-		{
-			for(long i = 0; i < dimension_n; ++i)
-			{
-				for(long mix = 0; mix < dimension_n; ++mix)
-				{
-					if(i == mix)
-					{
-						continue;
-					}
 
-					rand = RandomBnd(7);
-					if(rand == 0)
-					{
-						public_B[i] += public_B[mix];
-					}
-					else if(rand == 1)
-					{
-						public_B[i] -= public_B[mix];
-					}
-				}
-			}
-		}
-
-		// LLL-reduction
-//		ZZ det2;
-//		LLL(det2, public_B);	// exact-aritmetic (slow but sure)
-//		LLL_FP(public_B);	// floating-point (fast but only approximate)
-		G_LLL_FP(public_B);	// floating-point Givens rotations (somewhat slower than LLL_FP, but more stable)
+		// Hermite Normal Form
+		ZZ D;
+		determinant(D, public_B);
+		HNF(public_B, public_B, D);
 
 		transpose(public_B, public_B);
 	}
@@ -164,13 +148,18 @@ private:
 		mul(transform_T, public_B_Inv, conv<Mat<RR>>(private_R));
 	}
 
-	void GenerateErrorVector(Vec<ZZ>& v)
+	// xi = floor((ri - SUMj>i(bij * xj)) / (bii))
+	void ComputeEncryptionReductionVector(Vec<ZZ>& x, Vec<ZZ>& r, Mat<ZZ>& B)
 	{
-		v.SetLength(dimension_n);
-
-		for(long i = 0; i < dimension_n; ++i)
+		x.SetLength(dimension_n);
+		for(long i = dimension_n - 1; i >= 0; --i)
 		{
-			v[i] = parameter_sigma * (RandomBnd(2) * 2 - 1);	// {-sigma,sigma}
+			ZZ sum = ZZ(0);
+			for(long j = dimension_n - 1; j > i; --j)
+			{
+				sum += B[i][j] * x[j];
+			}
+			x[i] = (r[i] - sum) / B[i][i];
 		}
 	}
 
@@ -196,7 +185,7 @@ private:
 int RunTest(GGH& ggh)
 {
 	Vec<ZZ> plaintext_v;
-	ggh.GenerateRandomPlaintext(plaintext_v);
+	ggh.GenerateRandomErrorVectorPlaintext(plaintext_v);
 
 	Vec<ZZ> cyphertext_c;
 	ggh.Encrypt(cyphertext_c, plaintext_v);
@@ -225,7 +214,6 @@ int main()
 	long pass = 0;
 	long total = 0;
 
-	RR::SetPrecision(300);
 	SetSeed(conv<ZZ>(time(0)));
 
 	for(long i = 0; i < 10; ++i)
